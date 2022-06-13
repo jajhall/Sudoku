@@ -1,0 +1,4 @@
+export HiGHS_ROOT="/home/jajhall/HiGHS"
+echo $HiGHS_ROOT
+g++ -g $1 -I$HiGHS_ROOT/build -I$HiGHS_ROOT/src -I$HiGHS_ROOT/src -L$HiGHS_ROOT/build/lib -lhighs -o highs
+
