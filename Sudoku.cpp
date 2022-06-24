@@ -37,14 +37,22 @@ int main(int argc, char *argv[]) {
   std::vector<double> upper(num_var);
   upper.assign(num_var, 1);
 
+  int problem_num = 0;
   // Read a sequence of Sudoku grids
   std::vector<int> grid;
   grid.assign(num_cell, 0);
   for (;;) {
-    std::stringstream ss;
-    ss << f.rdbuf();
-    
-    std::string sudoku = std::move(ss.str());
+    const bool og_read = false;
+    std::string sudoku;
+    if (og_read) {
+      std::stringstream ss;
+      ss << f.rdbuf();
+      sudoku = std::move(ss.str());
+    } else {
+      std::getline(f, sudoku);
+      printf("Read Sudoku line %s\n", sudoku.c_str());
+    }
+
     int size = sudoku.length();
     if (size < num_cell) {
       if (size) printf("STRANGE: Line has size %d\n", size);
@@ -83,9 +91,11 @@ int main(int argc, char *argv[]) {
     */
 
     // Ensure lowest level of development logging
-    highs.setOptionValue("log_dev_level", 1);
+    //    highs.setOptionValue("log_dev_level", 1);
 
     // Solve the LP
+    problem_num++;
+    printf("Solving Sudoku %d\n", problem_num);
     highs.run();
     
     // Determine whether the solution is fractional
