@@ -17,19 +17,14 @@ const int num_var = num_cell * grid_dim;
 int varIndex(const int i, const int j, const int k);
 
 int main(int argc, char *argv[]) {
-  std::vector<int> grid;
-  std::vector<int> i_of_var(num_var);
-  std::vector<int> j_of_var(num_var);
-  std::vector<int> k_of_var(num_var);
-  std::vector<int> gridStart;
-  gridStart.push_back(0);
-  gridStart.push_back(3);
-  gridStart.push_back(6);
-
   assert(argc == 2);
     
   std::ifstream f(argv[1]);
   std::stringstream ss;
+
+
+  std::vector<int> grid;
+
   ss << f.rdbuf();
     
   std::string sudoku = std::move(ss.str());
@@ -47,6 +42,11 @@ int main(int argc, char *argv[]) {
     //    printf("%2d: %1d from %1c\n", k, grid[k], sudoku[k]);
   }
 
+	
+
+  std::vector<int> i_of_var(num_var);
+  std::vector<int> j_of_var(num_var);
+  std::vector<int> k_of_var(num_var);
   for (int i=0; i<grid_dim; i++)
     for (int j=0; j<grid_dim; j++) 
       for (int k=0; k<grid_dim; k++) {
@@ -56,7 +56,11 @@ int main(int argc, char *argv[]) {
 	k_of_var[iVar] = k+1;
       }
   
-	
+  std::vector<int> gridStart;
+  gridStart.push_back(0);
+  gridStart.push_back(3);
+  gridStart.push_back(6);
+
   Highs highs;
   std::vector<HighsVarType> integrality;
   for (int k=0; k<num_var; k++) {
