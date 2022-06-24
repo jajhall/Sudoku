@@ -10,63 +10,25 @@ using std::cin;
 using std::cout;
 using std::endl;
 
-const int grid_dim = 9;
+const int square_dim = 3;
+const int grid_dim = square_dim * square_dim;
 const int num_cell = grid_dim * grid_dim;
 const int num_var = num_cell * grid_dim;
 
 int varIndex(const int i, const int j, const int k);
+HighsStatus defineLp(Highs& highs);
 
 int main(int argc, char *argv[]) {
+  // Check that there is a file specified and open it as std::ifstream
   assert(argc == 2);
-    
   std::ifstream f(argv[1]);
-  std::stringstream ss;
 
-
-  std::vector<int> grid;
-
-  ss << f.rdbuf();
-    
-  std::string sudoku = std::move(ss.str());
-  int size = sudoku.length();
-  assert(size >= num_cell);
-  grid.assign(num_cell, 0);
-    
-  char c;
-  for (int k = 0; k < num_cell; k++) {
-    c = sudoku[k];
-    if (c != '.') {
-      assert(isdigit(c));
-      grid[k] = c - '0';
-    }
-    //    printf("%2d: %1d from %1c\n", k, grid[k], sudoku[k]);
-  }
-
-	
-
-  std::vector<int> i_of_var(num_var);
-  std::vector<int> j_of_var(num_var);
-  std::vector<int> k_of_var(num_var);
-  for (int i=0; i<grid_dim; i++)
-    for (int j=0; j<grid_dim; j++) 
-      for (int k=0; k<grid_dim; k++) {
-	int iVar = varIndex(i, j, k);
-	i_of_var[iVar] = i+1;
-	j_of_var[iVar] = j+1;
-	k_of_var[iVar] = k+1;
-      }
-  
-  std::vector<int> gridStart;
-  gridStart.push_back(0);
-  gridStart.push_back(3);
-  gridStart.push_back(6);
-
+  // Instantiate HiGHS
   Highs highs;
-  std::vector<HighsVarType> integrality;
-  for (int k=0; k<num_var; k++) {
-    highs.addVar(0, 1);
-    integrality.push_back(HighsVarType::kInteger);
-  }
+  // Add variables to HiGHS model
+  for (int k=0; k<num_var; k++) highs.addVar(0, 1);
+
+  // Add constraints to HiGHS model
   std::vector<int> index(grid_dim);
   std::vector<double> value(grid_dim);
   value.assign(grid_dim, 1);
@@ -94,8 +56,8 @@ int main(int argc, char *argv[]) {
 	int count = 0;
 	for (int iloop = 0; iloop<3; iloop++) {
 	  for (int jloop = 0; jloop<3; jloop++) {
-	    int i = iloop + gridStart[istart];
-	    int j = jloop + gridStart[jstart];
+	    int i = iloop + istart * square_dim;
+	    int j = jloop + jstart * square_dim;
 	    index[count++] = varIndex(i, j, k);
 	  }
 	}
@@ -103,32 +65,77 @@ int main(int argc, char *argv[]) {
       }
     }
   }
-  for (int i=0; i<grid_dim; i++)
-    for (int j=0; j<grid_dim; j++) {
-      int k = grid[j+grid_dim*i];
-      if (k) {
-	k--;
-	int iVar = varIndex(i, j, k);
-	assert(iVar<num_var);
-	highs.changeColBounds(iVar, 1, 1);
-      }
-    }
-  HighsLp lp = highs.getLp();
-  HighsSparseMatrix& matrix = lp.a_matrix_;
-  matrix.ensureRowwise();
-  printf("LP has %d rows, %d cols and %d nonzeros\n",  lp.num_row_, lp.num_col_, matrix.numNz());
+  // Possibly solve as MIP
+  const bool solve_as_mip = false;
+  if (solve_as_mip) {
+    // Set up integrality
+    std::vector<HighsVarType> integrality;
+    integrality.assign(num_var, HighsVarType::kInteger);
+    highs.changeColsIntegrality(0, num_var-1, &integrality[0]);
+  }
 
-  //  highs.changeColsIntegrality(0, num_var-1, &integrality[0]);
-  highs.setOptionValue("log_dev_level", 1);
-  highs.run();
-  const HighsSolution& solution = highs.getSolution();
-  int num_fractional = 0;
-  const double tl_fractional = 1e-4;
-  for (int iVar=0; iVar<num_var;iVar++)
-    if (solution.col_value[iVar] > tl_fractional && solution.col_value[iVar] < 1-tl_fractional) num_fractional++;
-  printf("Solution has %d fractional components\n", num_fractional);
-  //  highs.writeModel("Sudoku.mps");
+  std::vector<double> lower(num_var);
+  std::vector<double> upper(num_var);
+  upper.assign(num_var, 1);
+
+  // Read a sequence of Sudoku grids
+  std::vector<int> grid;
+  grid.assign(num_cell, 0);
+  for (;;) {
+    std::stringstream ss;
+    ss << f.rdbuf();
+    
+    std::string sudoku = std::move(ss.str());
+    int size = sudoku.length();
+    if (size < num_cell) {
+      if (size) printf("STRANGE: Line has size %d\n", size);
+      break;
+    } 
+    
+    char c;
+    for (int k = 0; k < num_cell; k++) {
+      c = sudoku[k];
+      if (c != '.') {
+	assert(isdigit(c));
+	grid[k] = c - '0';
+      }
+      //    printf("%2d: %1d from %1c\n", k, grid[k], sudoku[k]);
+    }
+    // Fix lower bounds of nonzero cells
+    lower.assign(num_var, 0);
+    for (int i=0; i<grid_dim; i++)
+      for (int j=0; j<grid_dim; j++) {
+	int k = grid[j+grid_dim*i];
+	if (k) {
+	  k--;
+	  int iVar = varIndex(i, j, k);
+	  assert(iVar<num_var);
+	  lower[iVar] = 1;
+	}
+      }
+    highs.changeColsBounds(0, num_var-1, &lower[0], &upper[0]);
+
+    HighsLp lp = highs.getLp();
+    HighsSparseMatrix& matrix = lp.a_matrix_;
+    //    matrix.ensureRowwise();
+    printf("LP has %d rows, %d cols and %d nonzeros\n",  lp.num_row_, lp.num_col_, matrix.numNz());
+
+    highs.setOptionValue("log_dev_level", 1);
+    highs.run();
+    const HighsSolution& solution = highs.getSolution();
+    int num_fractional = 0;
+    const double tl_fractional = 1e-4;
+    for (int iVar=0; iVar<num_var;iVar++)
+      if (solution.col_value[iVar] > tl_fractional && solution.col_value[iVar] < 1-tl_fractional) num_fractional++;
+    printf("Solution has %d fractional components\n", num_fractional);
+    //  highs.writeModel("Sudoku.mps");
+  }
   return 0;
 }
 
 int varIndex(const int i, const int j, const int k) { return k + grid_dim*(j+grid_dim*i); }
+
+HighsStatus defineLp(Highs& highs) {
+  HighsStatus return_status = HighsStatus::kOk;
+  return return_status;
+}
