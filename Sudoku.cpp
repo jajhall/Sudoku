@@ -1,16 +1,22 @@
 #include "Highs.h"
 #include <cassert>
+#include <iostream>
+#include <fstream>
+#include <sstream>
+//#include <string>
+//#include <vector>
+
 using std::cin;
 using std::cout;
 using std::endl;
 
 const int grid_dim = 9;
-const int num_var = grid_dim * grid_dim * grid_dim;
+const int num_cell = grid_dim * grid_dim;
+const int num_var = num_cell * grid_dim;
 
 int varIndex(const int i, const int j, const int k);
 
-int main() {
-  std::string sudoku;
+int main(int argc, char *argv[]) {
   std::vector<int> grid;
   std::vector<int> i_of_var(num_var);
   std::vector<int> j_of_var(num_var);
@@ -20,34 +26,27 @@ int main() {
   gridStart.push_back(3);
   gridStart.push_back(6);
 
-  for (int i=0; i<grid_dim; i++) {
-    for (int j=0; j<grid_dim; j++) {
-      cin >> sudoku;
-      if (sudoku == ".") {
-	grid.push_back(0);
-      } else {
-	const char* c = sudoku.c_str();
-	grid.push_back(atoi(c));
-      }
+  assert(argc == 2);
+    
+  std::ifstream f(argv[1]);
+  std::stringstream ss;
+  ss << f.rdbuf();
+    
+  std::string sudoku = std::move(ss.str());
+  int size = sudoku.length();
+  assert(size >= num_cell);
+  grid.assign(num_cell, 0);
+    
+  char c;
+  for (int k = 0; k < num_cell; k++) {
+    c = sudoku[k];
+    if (c != '.') {
+      assert(isdigit(c));
+      grid[k] = c - '0';
     }
+    //    printf("%2d: %1d from %1c\n", k, grid[k], sudoku[k]);
   }
-	
-  /*
-  cin >> sudoku;
-  cout << sudoku << endl;
 
-  for (string::iterator it=sudoku.begin(); it!=sudoku.end(); ++it) {
-
-    if (*it == '.'){
-      grid.push_back(0);
-    } else {
-      const char * c = (const char *)*it;
-      grid.push_back(atoi(c));
-    }
-    int k = grid.size()-1;
-    printf("%2d: %1d from %1c\n", k, grid[k], sudoku[k]);
-  }
-  */
   for (int i=0; i<grid_dim; i++)
     for (int j=0; j<grid_dim; j++) 
       for (int k=0; k<grid_dim; k++) {
@@ -124,7 +123,7 @@ int main() {
   for (int iVar=0; iVar<num_var;iVar++)
     if (solution.col_value[iVar] > tl_fractional && solution.col_value[iVar] < 1-tl_fractional) num_fractional++;
   printf("Solution has %d fractional components\n", num_fractional);
-  highs.writeModel("Sudoku.mps");
+  //  highs.writeModel("Sudoku.mps");
   return 0;
 }
 
