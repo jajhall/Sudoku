@@ -15,6 +15,8 @@ const int grid_dim = square_dim * square_dim;
 const int num_cell = grid_dim * grid_dim;
 const int num_var = num_cell * grid_dim;
 
+const double inf = kHighsInf;
+
 int varIndex(const int i, const int j, const int k);
 HighsStatus defineLp(Highs& highs);
 
@@ -29,13 +31,16 @@ int main(int argc, char *argv[]) {
   HighsStatus return_status = defineLp(highs);
   assert(return_status == HighsStatus::kOk);
 
-  // Set up const reference to internal solution structure
-  const HighsSolution& solution = highs.getSolution();
+  // Set up const reference to internal info structure and LP
+  const HighsInfo& info = highs.getInfo();
+  const HighsLp& lp = highs.getLp();
+  const int num_row = lp.num_row_;
 
-  // Set up vectors of bounds to be re-used, with upper being constant
-  std::vector<double> lower(num_var);
-  std::vector<double> upper(num_var);
-  upper.assign(num_var, 1);
+  // Set up vectors of costs, bounds and RHS to be re-used, with upper being constant
+  std::vector<double> cost;
+  std::vector<double> lower;
+  std::vector<double> upper;
+  std::vector<double> rhs;
 
   int problem_num = 0;
   // Read a sequence of Sudoku grids
@@ -68,8 +73,13 @@ int main(int argc, char *argv[]) {
       }
       //    printf("%2d: %1d from %1c\n", k, grid[k], sudoku[k]);
     }
-    // Fix lower bounds of nonzero cells
+    // Set up costs
+    cost.assign(num_var, 0);
+    return_status = highs.changeColsCost(0, num_var-1, &cost[0]);
+    assert(return_status == HighsStatus::kOk);
+    // Set up bounds
     lower.assign(num_var, 0);
+    upper.assign(num_var, 1);
     for (int i=0; i<grid_dim; i++)
       for (int j=0; j<grid_dim; j++) {
 	int k = grid[j+grid_dim*i];
@@ -77,36 +87,115 @@ int main(int argc, char *argv[]) {
 	  k--;
 	  int iVar = varIndex(i, j, k);
 	  assert(iVar<num_var);
+	  // Nonzero cells have bounds fixed at 1
 	  lower[iVar] = 1;
 	}
       }
-    // Set the lower and upper bounds for this LP
-    highs.changeColsBounds(0, num_var-1, &lower[0], &upper[0]);
-
-    /*
-    HighsLp lp = highs.getLp();
-    HighsSparseMatrix& matrix = lp.a_matrix_;
-    //    matrix.ensureRowwise();
-    printf("LP has %d rows, %d cols and %d nonzeros\n",  lp.num_row_, lp.num_col_, matrix.numNz());
-    */
+    return_status = highs.changeColsBounds(0, num_var-1, &lower[0], &upper[0]);
+    assert(return_status == HighsStatus::kOk);
+    // Set up RHS
+    rhs.assign(num_row, 1);
+    return_status = highs.changeRowsBounds(0, num_row-1, &rhs[0], &rhs[0]);
+    assert(return_status == HighsStatus::kOk);
 
     // Ensure lowest level of development logging
-    //    highs.setOptionValue("log_dev_level", 1);
+    return_status = highs.setOptionValue("log_dev_level", 1);
+    assert(return_status == HighsStatus::kOk);
 
     // Solve the LP
     problem_num++;
     printf("Solving Sudoku %d\n", problem_num);
-    highs.run();
+    // Ensure that any basis is cleared
+    return_status = highs.setBasis();
+    assert(return_status == HighsStatus::kOk);
     
-    // Determine whether the solution is fractional
+    return_status = highs.run();
+    assert(return_status == HighsStatus::kOk);
+    HighsSolution solution = highs.getSolution();
+    
+    // Determine whether the solution is fractional, and set up costs
+    // and bounds to investigate whether there exists an nontrivial
+    // feasible direction
+    //
+    // Objective is set up so that its value is the negation of the
+    // 1-norm of the direction
     int num_fractional = 0;
     const double tl_fractional = 1e-4;
-    for (int iVar=0; iVar<num_var;iVar++)
+    for (int iVar=0; iVar<num_var;iVar++) {
       if (solution.col_value[iVar] > tl_fractional &&
 	  solution.col_value[iVar] < 1-tl_fractional) num_fractional++;
-    if (num_fractional)
+      if (solution.col_value[iVar] < 0.5) {
+	// Zero point in feasible region, so component of feasible
+	// direction must be non-negative, and cost is negative
+	cost[iVar] = -1;
+	lower[iVar] = 0;
+	upper[iVar] = inf;
+      } else {
+	// Unit point in feasible region, so component of feasible
+	// direction must be non-positive, and cost is positive
+	cost[iVar] = 1;
+	lower[iVar] = -inf;
+	upper[iVar] = 0;
+      }
+    }
+    if (num_fractional) {
       printf("Solution has %d fractional components\n", num_fractional);
-    //  highs.writeModel("Sudoku.mps");
+      continue;
+    }
+    // Integer solution, so see whether there exists an nontrivial
+    // feasible direction
+    return_status = highs.changeColsCost(0, num_var-1, &cost[0]);
+    assert(return_status == HighsStatus::kOk);
+    return_status = highs.changeColsBounds(0, num_var-1, &lower[0], &upper[0]);
+    assert(return_status == HighsStatus::kOk);
+    // Set up RHS
+    rhs.assign(num_row, 0);
+    return_status = highs.changeRowsBounds(0, num_row-1, &rhs[0], &rhs[0]);
+    assert(return_status == HighsStatus::kOk);
+    // Ensure that any basis is cleared
+    return_status = highs.setBasis();
+    assert(return_status == HighsStatus::kOk);
+    // Solve for a feasible direction
+    return_status = highs.run();
+    assert(return_status == HighsStatus::kOk);
+    HighsSolution direction = highs.getSolution();
+    printf("Solution of feasible direction problem has |d| = %g\n", -info.objective_function_value);
+    //      if (info.objective_function_value < 0) {
+    double alpha = inf;
+    for (int iVar=0; iVar < num_var; iVar++) {
+      if (direction.col_value[iVar] > 0) {
+	alpha = std::min(1/direction.col_value[iVar], alpha);
+      } else if (direction.col_value[iVar] < 0) {
+	alpha = std::min(-1/direction.col_value[iVar], alpha);
+      }
+      //	  printf("%3d: x = %11.4g; d = %11.4g; alpha = %11.4g\n",
+      //		 iVar, solution.col_value[iVar], direction.col_value[iVar], alpha);
+    }
+    assert(info.objective_function_value < 0 || alpha == inf);
+    if (alpha >= inf) continue;
+    // A finite step is possible
+    std::vector<double> vertex = solution.col_value;
+    num_fractional = 0;
+    double max_bound_residual = 0;
+    for (int iVar=0; iVar < num_var; iVar++) {
+      vertex[iVar] += alpha * direction.col_value[iVar];
+      if (vertex[iVar] > tl_fractional &&
+	  vertex[iVar] < 1-tl_fractional) num_fractional++;
+      // Get the max bound residual
+      double bound_residual = std::min(vertex[iVar], 1-vertex[iVar]);
+      max_bound_residual = std::max(-bound_residual, max_bound_residual);
+      // Get the max row residual
+      double max_row_residual = 0;
+      std::vector<double> row_residual;
+      row_residual.assign(num_row, 0);
+      lp.a_matrix_.productQuad(row_residual, vertex);
+      for (int iRow=0; iRow < num_row; iRow++)
+	max_row_residual = std::max(fabs(row_residual[iRow]-1), max_row_residual);
+      
+      printf("Feasible direction yields step %g to vertex with %d fractional components and max bound / row residual = %g / %g\n",
+	     alpha, num_fractional, max_bound_residual, max_row_residual);      
+      
+    }
   }
   return 0;
 }
