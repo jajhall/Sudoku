@@ -3,8 +3,6 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
-//#include <string>
-//#include <vector>
 
 using std::cin;
 using std::cout;
@@ -26,6 +24,7 @@ const int num_var = num_cell * grid_dim;
 // point number. 
 const double inf = kHighsInf;
 
+// "Headers" of methods used in "main", but defined later
 int varIndex(const int i, const int j, const int k);
 // Defined later in this file, varIndex translates the (i, j, k)
 // triple into the corresponding variable number
@@ -34,6 +33,9 @@ HighsStatus defineLp(Highs& highs);
 // Defined later in this file, defineLp sets up the variables and
 // constraints of the LP
 
+void reportPresolveLog(Highs& highs);
+
+// The "main" method - what is called by the executable.
 int main(int argc, char *argv[]) {
   // Check that there is a file specified and open it as std::ifstream
   assert(argc == 2);
@@ -41,8 +43,29 @@ int main(int argc, char *argv[]) {
 
   // Instantiate HiGHS
   Highs highs;
+  // Define a variable to receive the return status from HiGHS
+  // method. "HighsStatus" is a special type of idetifier that can
+  // only take the following values: HighsStatus::kOk,
+  // HighsStatus::kWarning, HighsStatus::kError
+  HighsStatus return_status;
+
+  // Define the level of output from HiGHS
+  const bool allow_highs_dev_log = false;
+  if (allow_highs_dev_log) {
+    // Ensure lowest level of development logging
+    return_status = highs.setOptionValue("log_dev_level", 1);
+    // assert(bool) kills the executable when compiled with debugging
+    // (-g flag in CompLinkFILE) if bool is false. In other words, the
+    // programmer is "asserting" that something must be true.
+    assert(return_status == HighsStatus::kOk);
+  } else {
+    // Force HiGHS to run quietly
+    return_status = highs.setOptionValue("output_flag", false);
+    assert(return_status == HighsStatus::kOk);
+  }
+
   // Define the LP variables and constraints
-  HighsStatus return_status = defineLp(highs);
+  return_status = defineLp(highs);
   assert(return_status == HighsStatus::kOk);
 
   // A pointer is a variable that holds the memory address of another
@@ -55,7 +78,7 @@ int main(int argc, char *argv[]) {
   // equivalent to that variable so, for example, if that variable
   // moves in memory, the reference follows it.
   //
-  // Set up const reference to internal info structure and LP
+  // Set up const reference to internal LP, presolved LP, info structure, and solution
   //
   // There are variables in the HiGHS class [strictly they are called
   // class data members] that store data for the class. Users can get
@@ -67,6 +90,9 @@ int main(int argc, char *argv[]) {
   // references to the original variables, not copies of them.
   const HighsInfo& info = highs.getInfo();
   const HighsLp& lp = highs.getLp();
+  const HighsLp& presolved_lp = highs.getPresolvedLp();
+  const HighsSolution& solution = highs.getSolution();
+  // Convenient short-hand for the number of rows
   const int num_row = lp.num_row_;
   // Note that the following line
   //
@@ -75,6 +101,19 @@ int main(int argc, char *argv[]) {
   // takes a copy of the "HighsInfo" values in the HiGHS class. If
   // calling a HiGHS method causes the internal values to change, then
   // these copies are unaffected.
+
+  // The presolve_rule_off option will alow certain presolve rules to
+  // be switched off
+  int presolve_rule_off = 0;
+  //  presolve_rule_off += 512;  // Doubleton equation rule off
+  //  presolve_rule_off += 1024; // Dependent equations rule off
+  //  presolve_rule_off += 2048; // Dependent free columns rule off (not implemented)
+  //  presolve_rule_off += 4096; // Aggregator rule off
+  //  presolve_rule_off += 8192; // Parallel rows and columns rule off
+  if (presolve_rule_off) {
+    return_status = highs.setOptionValue("presolve_rule_off", presolve_rule_off);
+    assert(return_status == HighsStatus::kOk);
+  }
 
   // Set up vectors of bounds to be re-used, with upper being constant
   std::vector<double> lower;
@@ -86,21 +125,16 @@ int main(int argc, char *argv[]) {
   std::vector<int> grid;
   grid.assign(num_cell, 0);
   for (;;) {
-    const bool og_read = false;
+    // This is an "infinite" loop, that terminates when a "break" is
+    // encountered
     std::string sudoku;
-    if (og_read) {
-      std::stringstream ss;
-      ss << f.rdbuf();
-      sudoku = std::move(ss.str());
-    } else {
-      std::getline(f, sudoku);
-      printf("Read Sudoku line %s\n", sudoku.c_str());
-    }
+    std::getline(f, sudoku);
+    //      printf("Read Sudoku line %s\n", sudoku.c_str());
 
     int size = sudoku.length();
     if (size < num_cell) {
       if (size) printf("STRANGE: Line has size %d\n", size);
-      break;
+      break; // Leave the "for (;;)" loop
     } 
     
     char c;
@@ -136,23 +170,36 @@ int main(int argc, char *argv[]) {
     return_status = highs.changeColsBounds(0, num_var-1, &lower[0], &upper[0]);
     assert(return_status == HighsStatus::kOk);
 
-    // Ensure lowest level of development logging
-    return_status = highs.setOptionValue("log_dev_level", 1);
-    assert(return_status == HighsStatus::kOk);
-
-    // Solve the LP
+    // Increment the problem counter
     problem_num++;
-    printf("Solving Sudoku %d\n", problem_num);
-    // Ensure that any basis is cleared - otherwise HiGHS won't use
-    // presolve when given the second and subsequent LPs
-    return_status = highs.setBasis();
-    assert(return_status == HighsStatus::kOk);
+    printf("\nSolving Sudoku %d\n", problem_num);
+    const bool just_presolve = false;
+    if (just_presolve) {
+      // Just run presolve 
+      return_status = highs.presolve();
+      assert(return_status == HighsStatus::kOk);
+      // Flag up case where presolve does not reduce to empty
+      if (presolved_lp.num_row_+presolved_lp.num_col_)
+	printf("Presolved LP has %d rows and %d columns\n",
+	       (int)presolved_lp.num_row_, (int)presolved_lp.num_col_);
+    } else {
+      // Solve the LP
+      // Ensure that any basis is cleared - otherwise HiGHS won't use
+      // presolve when given the second and subsequent LPs
+      return_status = highs.setBasis();
+      assert(return_status == HighsStatus::kOk);
     
-    // Highs::run() actually does the optimization!
-    return_status = highs.run();
-    assert(return_status == HighsStatus::kOk);
-    HighsSolution solution = highs.getSolution();
-    
+      // Highs::run() actually does the optimization!
+      return_status = highs.run();
+      assert(return_status == HighsStatus::kOk);
+      // Report whether simplex iterations were required
+      if (info.simplex_iteration_count)
+	printf("Solving problem required %d simplex iterations\n", info.simplex_iteration_count);
+    }
+
+    // Report the presolve log
+    reportPresolveLog(highs);
+
     // Determine whether the solution is fractional
     int num_fractional = 0; // This has to change so isn't "const"
     const double tl_fractional = 1e-4; 
@@ -235,4 +282,23 @@ HighsStatus defineLp(Highs& highs) {
     if (return_status != HighsStatus::kOk) return return_status;
   }
   return return_status;
+}
+
+void reportPresolveLog(Highs& highs) {
+  const HighsPresolveLog& presolve_log = highs.getPresolveLog();
+  // The presolve_rule_off option will alow certain presolve rules to
+  // be switched off
+  int presolve_rule_off = highs.getOptions().presolve_rule_off;
+  int bit = 1;
+  printf("\nRule  Bit| Call Row Col| Name\n");
+  for (int rule_ix = 0; rule_ix < kPresolveRuleCount; rule_ix++) {
+    bool allow = !(presolve_rule_off & bit);
+    const HighsPresolveRuleLog& log = presolve_log.rule[rule_ix];
+    if (log.call) printf("  %2d %4d|  %3d %3d %3d| %s\n", rule_ix, bit,
+			 log.call, 
+			 log.row_removed,
+			 log.col_removed,
+			 highs.presolveRuleTypeToString(rule_ix).c_str());
+    bit *= 2;
+  }
 }
