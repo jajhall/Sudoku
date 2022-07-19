@@ -51,7 +51,7 @@ int main(int argc, char *argv[]) {
 
   // Define the level of output from HiGHS
   const bool allow_highs_dev_log = false;
-  if (allow_highs_dev_log) {
+    if (allow_highs_dev_log) {
     // Ensure lowest level of development logging
     return_status = highs.setOptionValue("log_dev_level", 1);
     // assert(bool) kills the executable when compiled with debugging
@@ -195,11 +195,7 @@ int main(int argc, char *argv[]) {
       // Report whether simplex iterations were required
       if (info.simplex_iteration_count)
 	printf("Solving problem required %d simplex iterations\n", info.simplex_iteration_count);
-    }
-
-    // Report the presolve log
-    reportPresolveLog(highs);
-
+   
     // Determine whether the solution is fractional
     int num_fractional = 0; // This has to change so isn't "const"
     const double tl_fractional = 1e-4; 
@@ -211,6 +207,10 @@ int main(int argc, char *argv[]) {
       printf("Solution has %d fractional components\n", num_fractional);
       continue;
     }
+   }
+
+    // Report the presolve log
+    reportPresolveLog(highs);
   }
   return 0;
 }

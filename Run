@@ -1,4 +1,4 @@
-export LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:/home/jajhall/HiGHS/build/lib"
+export LD_LIBRARY_PATH="${LD_LIBRARY_PATH}:/home/s2264941/HiGHS/build/lib"
 ./highs $1
 
 
