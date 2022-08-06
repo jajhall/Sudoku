@@ -62,6 +62,8 @@ int main(int argc, char *argv[]) {
     // Force HiGHS to run quietly
     return_status = highs.setOptionValue("output_flag", false);
     assert(return_status == HighsStatus::kOk);
+    highs.setOptionValue("presolve_log_report", true);
+    highs.setOptionValue("doubleton_equation_sudoku_report", true);
   }
 
   // Define the LP variables and constraints
