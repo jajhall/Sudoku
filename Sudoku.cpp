@@ -50,7 +50,7 @@ int main(int argc, char *argv[]) {
   HighsStatus return_status;
 
   // Define the level of output from HiGHS
-  const bool allow_highs_dev_log = false;
+  const bool allow_highs_dev_log = true;
     if (allow_highs_dev_log) {
     // Ensure lowest level of development logging
     return_status = highs.setOptionValue("log_dev_level", 1);
@@ -194,6 +194,9 @@ int main(int argc, char *argv[]) {
       // Highs::run() actually does the optimization!
       return_status = highs.run();
       assert(return_status == HighsStatus::kOk);
+      HighsModelStatus model_status = highs.getModelStatus();
+      if (model_status != HighsModelStatus::kOptimal)
+	printf("Model status is %s\n", highs.modelStatusToString(model_status).c_str());
       // Report whether simplex iterations were required
       if (info.simplex_iteration_count)
 	printf("Solving problem required %d simplex iterations\n", info.simplex_iteration_count);
