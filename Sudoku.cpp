@@ -15,6 +15,8 @@ const int square_dim = 3;
 const int grid_dim = square_dim * square_dim;
 const int num_cell = grid_dim * grid_dim;
 const int num_var = num_cell * grid_dim;
+const bool solve_as_mip = true;
+const bool strong_formulation = false;
 
 // kHighsInf is defined to be a logical infinity
 //
@@ -35,11 +37,17 @@ HighsStatus defineLp(Highs& highs);
 
 void reportPresolveLog(Highs& highs);
 
+void writeSudoku(const std::vector<double>& solution);
+
 // The "main" method - what is called by the executable.
 int main(int argc, char *argv[]) {
   // Check that there is a file specified and open it as std::ifstream
   assert(argc == 2);
-  std::ifstream f(argv[1]);
+  const std::string sudoku = argv[1];
+  const std::string sudoku_dat = sudoku + ".dat";
+  const std::string sudoku_mps = sudoku + ".mps";
+  
+  std::ifstream f(sudoku_dat);
 
   // Instantiate HiGHS
   Highs highs;
@@ -66,7 +74,7 @@ int main(int argc, char *argv[]) {
     highs.setOptionValue("doubleton_equation_sudoku_report", true);
   }
 
-  // Define the LP variables and constraints
+  // Define the LP variables and constraints without the starting grid
   return_status = defineLp(highs);
   assert(return_status == HighsStatus::kOk);
 
@@ -150,27 +158,54 @@ int main(int argc, char *argv[]) {
       }
       //    printf("%2d: %1d from %1c\n", k, grid[k], sudoku[k]);
     }
-    // Set up bounds
-    lower.assign(num_var, 0);
-    for (int i=0; i<grid_dim; i++)
-      for (int j=0; j<grid_dim; j++) {
-	int k = grid[j+grid_dim*i];
-	if (k) { // if (k) is true if k is nonzero
-	  k--;
-	  int iVar = varIndex(i, j, k);
-	  assert(iVar<num_var);
-	  // Nonzero cells have bounds fixed at 1
-	  lower[iVar] = 1;
+    if (strong_formulation) {
+      // Set up bounds
+      lower.assign(num_var, 0);
+      for (int i=0; i<grid_dim; i++)
+	for (int j=0; j<grid_dim; j++) {
+	  int k = grid[j+grid_dim*i];
+	  if (k) { // if (k) is true if k is nonzero
+	    k--;
+	    int iVar = varIndex(i, j, k);
+	    assert(iVar<num_var);
+	    // Nonzero cells have bounds fixed at 1
+	    lower[iVar] = 1;
+	  }
+	}
+      // Change the bounds of the incumbent LP in the Highs class
+      // instance. Highs::changeColsBounds takes pointers to the (first)
+      // value in the lower and upper bound vectors so that the C
+      // interface to HiGHS doesn't have to make std::vector<double>
+      // copies of the bounds when called from C (which only has arrays
+      // of memory).
+      return_status = highs.changeColsBounds(0, num_var-1, lower.data(), upper.data());
+      assert(return_status == HighsStatus::kOk);
+    } else {
+      // Set up an objective that sums negation of all variables, and
+      // single constraint that the sum of all variables corresponding
+      // to initial values is the number of initial values
+      std::vector<double> cost(num_var, -1);
+      return_status = highs.changeColsCost(0, num_var-1, cost.data());
+      assert(return_status == HighsStatus::kOk);
+      std::vector<int> index;
+      std::vector<double> value;
+      for (int i=0; i<grid_dim; i++) {
+	for (int j=0; j<grid_dim; j++) {
+	  int k = grid[j+grid_dim*i];
+	  if (k) { // if (k) is true if k is nonzero
+	    k--;
+	    int iVar = varIndex(i, j, k);
+	    assert(iVar<num_var);
+	    index.push_back(iVar);
+	    value.push_back(1);
+	  }
 	}
       }
-    // Change the bounds of the incumbent LP in the Highs class
-    // instance. Highs::changeColsBounds takes pointers to the (first)
-    // value in the lower and upper bound vectors so that the C
-    // interface to HiGHS doesn't have to make std::vector<double>
-    // copies of the bounds when called from C (which only has arrays
-    // of memory).
-    return_status = highs.changeColsBounds(0, num_var-1, &lower[0], &upper[0]);
-    assert(return_status == HighsStatus::kOk);
+      const int num_start_value = index.size();
+      const double start_value_rhs = num_start_value;
+      return_status = highs.addRow(start_value_rhs, start_value_rhs, num_start_value, index.data(), value.data());
+      assert(return_status == HighsStatus::kOk);
+    }
 
     // Increment the problem counter
     problem_num++;
@@ -191,6 +226,7 @@ int main(int argc, char *argv[]) {
       return_status = highs.setBasis();
       assert(return_status == HighsStatus::kOk);
     
+      return_status = highs.writeModel(sudoku_mps);
       // Highs::run() actually does the optimization!
       return_status = highs.run();
       assert(return_status == HighsStatus::kOk);
@@ -201,22 +237,26 @@ int main(int argc, char *argv[]) {
       if (info.simplex_iteration_count)
 	printf("Solving problem required %d simplex iterations\n", info.simplex_iteration_count);
    
-    // Determine whether the solution is fractional
-    int num_fractional = 0; // This has to change so isn't "const"
-    const double tl_fractional = 1e-4; 
-    for (int iVar=0; iVar<num_var;iVar++) {
-      if (solution.col_value[iVar] > tl_fractional &&
-	  solution.col_value[iVar] < 1-tl_fractional) num_fractional++;
+      // Determine whether the solution is fractional
+      int num_fractional = 0; // This has to change so isn't "const"
+      const double tl_fractional = 1e-4; 
+      for (int iVar=0; iVar<num_var;iVar++) {
+	if (solution.col_value[iVar] > tl_fractional &&
+	    solution.col_value[iVar] < 1-tl_fractional) num_fractional++;
+      }
+      if (num_fractional) {
+	printf("Solution has %d fractional components\n", num_fractional);
+	continue;
+      } else {
+	writeSudoku(solution.col_value);
+      }
     }
-    if (num_fractional) {
-      printf("Solution has %d fractional components\n", num_fractional);
-      continue;
+    if (!solve_as_mip) {
+      // Report the presolve log: only valid for LPs
+      reportPresolveLog(highs);
     }
-   }
-
-    // Report the presolve log
-    reportPresolveLog(highs);
   }
+  
   return 0;
 }
 
@@ -224,13 +264,15 @@ int varIndex(const int i, const int j, const int k) { return k + grid_dim*(j+gri
 
 HighsStatus defineLp(Highs& highs) {
   HighsStatus return_status = HighsStatus::kOk;
+  const double constraint_lower = strong_formulation ? 1 : -kHighsInf;
+  
   // Add variables to HiGHS model
   std::vector<double> lower;
   std::vector<double> upper;
   // Set up bounds
   lower.assign(num_var, 0);
   upper.assign(num_var, 1);
-  return_status = highs.addVars(num_var, &lower[0], &upper[0]);
+  return_status = highs.addVars(num_var, lower.data(), upper.data());
   if (return_status != HighsStatus::kOk) return return_status;
 
   // Add constraints to HiGHS model. We know how many nonzeros are in
@@ -244,21 +286,21 @@ HighsStatus defineLp(Highs& highs) {
     for (int j=0; j<grid_dim; j++) {
       for (int k=0; k<grid_dim; k++)
 	index[k]=varIndex(i, j, k);
-      return_status = highs.addRow(1, 1, grid_dim, &index[0], &value[0]);
+      return_status = highs.addRow(constraint_lower, 1, grid_dim, index.data(), value.data());
       if (return_status != HighsStatus::kOk) return return_status;
     }
   for (int i=0; i<grid_dim; i++)
     for (int k=0; k<grid_dim; k++) {
       for (int j=0; j<grid_dim; j++)
 	index[j]=varIndex(i, j, k);
-      return_status = highs.addRow(1, 1, grid_dim, &index[0], &value[0]);
+      return_status = highs.addRow(constraint_lower, 1, grid_dim, index.data(), value.data());
       if (return_status != HighsStatus::kOk) return return_status;
     }
   for (int k=0; k<grid_dim; k++)
     for (int j=0; j<grid_dim; j++) {
       for (int i=0; i<grid_dim; i++)
 	index[i]=varIndex(i, j, k);
-      return_status = highs.addRow(1, 1, grid_dim, &index[0], &value[0]);
+      return_status = highs.addRow(constraint_lower, 1, grid_dim, index.data(), value.data());
       if (return_status != HighsStatus::kOk) return return_status;
     }
   for (int k=0; k<grid_dim; k++) {
@@ -272,18 +314,17 @@ HighsStatus defineLp(Highs& highs) {
 	    index[count++] = varIndex(i, j, k);
 	  }
 	}
-	return_status = highs.addRow(1, 1, grid_dim, &index[0], &value[0]);
+	return_status = highs.addRow(constraint_lower, 1, grid_dim, index.data(), value.data());
 	if (return_status != HighsStatus::kOk) return return_status;
       }
     }
   }
   // Possibly solve as MIP
-  const bool solve_as_mip = false;
   if (solve_as_mip) {
     // Set up integrality
     std::vector<HighsVarType> integrality;
     integrality.assign(num_var, HighsVarType::kInteger);
-    return_status = highs.changeColsIntegrality(0, num_var-1, &integrality[0]);
+    return_status = highs.changeColsIntegrality(0, num_var-1, integrality.data());
     if (return_status != HighsStatus::kOk) return return_status;
   }
   return return_status;
@@ -307,3 +348,23 @@ void reportPresolveLog(Highs& highs) {
     bit *= 2;
   }
 }
+void writeSudoku(const std::vector<double>& solution) {
+  std::vector<int>values(grid_dim);
+  for (int i=0; i<grid_dim; i++) {
+    for (int j=0; j<grid_dim; j++) {
+      values[j] = 0;
+      for (int k=0; k<grid_dim; k++) {
+	if (solution[varIndex(i, j, k)] > 1e-3) {
+	  values[j] = k+1;
+	  break;
+	}
+      }
+    }
+    for (int j=0; j<grid_dim; j++)
+      printf("%1d", values[j]);
+    printf("\n");
+  }
+}
+ 
+	
+
