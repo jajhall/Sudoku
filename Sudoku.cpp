@@ -16,7 +16,9 @@ const int grid_dim = square_dim * square_dim;
 const int num_cell = grid_dim * grid_dim;
 const int num_var = num_cell * grid_dim;
 const bool solve_as_mip = true;
-const bool strong_formulation = false;
+const bool weak_formulation = true;
+const bool weaker_formulation = true;
+const bool weakest_formulation = false;
 
 // kHighsInf is defined to be a logical infinity
 //
@@ -41,6 +43,20 @@ void writeSudoku(const std::vector<double>& solution);
 
 // The "main" method - what is called by the executable.
 int main(int argc, char *argv[]) {
+  if (weakest_formulation) {
+    assert(weaker_formulation);
+    assert(weak_formulation);
+  }
+  if (weaker_formulation) {
+    assert(weak_formulation);
+  }
+  if (!weak_formulation) {
+    assert(!weaker_formulation);
+    assert(!weakest_formulation);
+  }
+  if (!weaker_formulation) {
+    assert(!weakest_formulation);
+  }
   // Check that there is a file specified and open it as std::ifstream
   assert(argc == 2);
   const std::string sudoku = argv[1];
@@ -158,7 +174,28 @@ int main(int argc, char *argv[]) {
       }
       //    printf("%2d: %1d from %1c\n", k, grid[k], sudoku[k]);
     }
-    if (strong_formulation) {
+    if (weakest_formulation) {
+      // Set up a single constraint that the sum of all variables corresponding
+      // to initial values is the number of initial values
+      std::vector<int> index;
+      std::vector<double> value;
+      for (int i=0; i<grid_dim; i++) {
+	for (int j=0; j<grid_dim; j++) {
+	  int k = grid[j+grid_dim*i];
+	  if (k) { // if (k) is true if k is nonzero
+	    k--;
+	    int iVar = varIndex(i, j, k);
+	    assert(iVar<num_var);
+	    index.push_back(iVar);
+	    value.push_back(1);
+	  }
+	}
+      }
+      const int num_start_value = index.size();
+      const double start_value_rhs = num_start_value;
+      return_status = highs.addRow(start_value_rhs, kHighsInf, num_start_value, index.data(), value.data());
+      assert(return_status == HighsStatus::kOk);
+    } else {
       // Set up bounds
       lower.assign(num_var, 0);
       for (int i=0; i<grid_dim; i++)
@@ -180,33 +217,13 @@ int main(int argc, char *argv[]) {
       // of memory).
       return_status = highs.changeColsBounds(0, num_var-1, lower.data(), upper.data());
       assert(return_status == HighsStatus::kOk);
-    } else {
-      // Set up an objective that sums negation of all variables, and
-      // single constraint that the sum of all variables corresponding
-      // to initial values is the number of initial values
+    }
+    if (weaker_formulation) {
+      // Set up an objective that sums negation of all variables
       std::vector<double> cost(num_var, -1);
       return_status = highs.changeColsCost(0, num_var-1, cost.data());
       assert(return_status == HighsStatus::kOk);
-      std::vector<int> index;
-      std::vector<double> value;
-      for (int i=0; i<grid_dim; i++) {
-	for (int j=0; j<grid_dim; j++) {
-	  int k = grid[j+grid_dim*i];
-	  if (k) { // if (k) is true if k is nonzero
-	    k--;
-	    int iVar = varIndex(i, j, k);
-	    assert(iVar<num_var);
-	    index.push_back(iVar);
-	    value.push_back(1);
-	  }
-	}
-      }
-      const int num_start_value = index.size();
-      const double start_value_rhs = num_start_value;
-      return_status = highs.addRow(start_value_rhs, start_value_rhs, num_start_value, index.data(), value.data());
-      assert(return_status == HighsStatus::kOk);
     }
-
     // Increment the problem counter
     problem_num++;
     printf("\nSolving Sudoku %d\n", problem_num);
@@ -264,8 +281,6 @@ int varIndex(const int i, const int j, const int k) { return k + grid_dim*(j+gri
 
 HighsStatus defineLp(Highs& highs) {
   HighsStatus return_status = HighsStatus::kOk;
-  const double constraint_lower = strong_formulation ? 1 : -kHighsInf;
-  
   // Add variables to HiGHS model
   std::vector<double> lower;
   std::vector<double> upper;
@@ -282,25 +297,31 @@ HighsStatus defineLp(Highs& highs) {
   std::vector<double> value(grid_dim);
   // Indeed, we know that all the values are 1
   value.assign(grid_dim, 1);
+  // For the weak (weaker and weakest) formulation, three of the sets
+  // of constraints have lower bounds of -inf
+  const double weak_constraint_lower = weak_formulation ? -kHighsInf : 1;
+  // For the weaker (and weakest) formulation, the remaining
+  // constraints have lower bounds of -inf
+  const double weaker_constraint_lower = weaker_formulation ? -kHighsInf : 1;
   for (int i=0; i<grid_dim; i++)
     for (int j=0; j<grid_dim; j++) {
       for (int k=0; k<grid_dim; k++)
 	index[k]=varIndex(i, j, k);
-      return_status = highs.addRow(constraint_lower, 1, grid_dim, index.data(), value.data());
+      return_status = highs.addRow(weak_constraint_lower, 1, grid_dim, index.data(), value.data());
       if (return_status != HighsStatus::kOk) return return_status;
     }
   for (int i=0; i<grid_dim; i++)
     for (int k=0; k<grid_dim; k++) {
       for (int j=0; j<grid_dim; j++)
 	index[j]=varIndex(i, j, k);
-      return_status = highs.addRow(constraint_lower, 1, grid_dim, index.data(), value.data());
+      return_status = highs.addRow(weak_constraint_lower, 1, grid_dim, index.data(), value.data());
       if (return_status != HighsStatus::kOk) return return_status;
     }
   for (int k=0; k<grid_dim; k++)
     for (int j=0; j<grid_dim; j++) {
       for (int i=0; i<grid_dim; i++)
 	index[i]=varIndex(i, j, k);
-      return_status = highs.addRow(constraint_lower, 1, grid_dim, index.data(), value.data());
+      return_status = highs.addRow(weak_constraint_lower, 1, grid_dim, index.data(), value.data());
       if (return_status != HighsStatus::kOk) return return_status;
     }
   for (int k=0; k<grid_dim; k++) {
@@ -314,7 +335,7 @@ HighsStatus defineLp(Highs& highs) {
 	    index[count++] = varIndex(i, j, k);
 	  }
 	}
-	return_status = highs.addRow(constraint_lower, 1, grid_dim, index.data(), value.data());
+	return_status = highs.addRow(weaker_constraint_lower, 1, grid_dim, index.data(), value.data());
 	if (return_status != HighsStatus::kOk) return return_status;
       }
     }
